@@ -29,6 +29,18 @@ LLM_MODEL = os.environ.get("TS_TRANSLATE_LLM_MODEL", "qwen3.8:27b")
 TS_URL = os.environ.get("TS_TRANSLATE_TS_URL", "https://api.typesafe.ai/v1/systemone")
 TS_MODEL = os.environ.get("TS_TRANSLATE_TS_MODEL", "jev-latest")
 
+# ollawake (mac mini) — best-effort wake of a sleeping host; ignored if unreachable.
+OLLAWAKE = os.environ.get("TS_TRANSLATE_OLLAWAKE", "http://100.70.244.85:11436")
+
+# Fallback chain: tried in order until one host answers with a compilable request.
+# Override wholesale with TS_TRANSLATE_LLM_CHAIN (JSON list of {label,url,model,wake?}).
+DEFAULT_CHAIN = [
+    {"label": "corsair",    "url": "http://100.94.117.48:11434/api/chat", "model": "qwen3.8:27b",     "wake": "corsair"},
+    {"label": "corsair-alt","url": "http://100.94.117.48:11434/api/chat", "model": "qwen3.6:35b-a3b"},
+    {"label": "mac-studio", "url": "http://100.68.94.14:11434/api/chat",  "model": "ornith-1.5:35b"},
+    {"label": "alien18",    "url": "http://100.87.2.47:11434/api/chat",   "model": "qwen3:14b"},
+]
+
 VALID_TYPES = {"noul", "choice", "score"}
 
 COMPILER_SYSTEM = """\
@@ -126,35 +138,92 @@ def _extract_json(text: str) -> dict:
     raise json.JSONDecodeError("no valid JSON after repair", text, 0)
 
 
-def compile_request(text: str, *, state_override: str | None = None,
-                    llm_url: str = LLM_URL, llm_model: str = LLM_MODEL,
-                    ts_model: str = TS_MODEL) -> dict:
-    """Natural-language text -> normalized TypeSafe request {model, state, questions}."""
-    user = text if state_override is None else f"{text}\n\n<content to evaluate>\n{state_override}"
-    payload = {
-        "model": llm_model, "think": False, "stream": False, "format": "json",
-        "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 2048},
-        "messages": [
-            {"role": "system", "content": COMPILER_SYSTEM},
-            {"role": "user", "content": FEWSHOT_USER},
-            {"role": "assistant", "content": FEWSHOT_ASSISTANT},
-            {"role": "user", "content": user},
-        ],
-    }
+def _reachable(chat_url: str) -> bool:
+    """Fast liveness check on the host (short timeout) before a heavy generate call."""
+    base = chat_url.rsplit("/api/", 1)[0]
     try:
-        resp = _post_json(llm_url, payload)
-    except (urllib.error.URLError, TimeoutError) as e:
-        raise SystemExit(f"[error] LLM no accesible en {llm_url}: {e}\n"
-                         f"        ¿corsair despierto? prueba otro --llm-url/--llm-model.")
-    raw = resp.get("message", {}).get("content", "")
-    try:
-        compiled = _extract_json(raw)
-    except json.JSONDecodeError:
-        raise SystemExit(f"[error] el LLM no devolvió JSON válido. Salida:\n{raw[:500]}")
+        urllib.request.urlopen(base + "/api/tags", timeout=4).read()
+        return True
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return False
 
+
+def _try_wake(host: str) -> None:
+    """Best-effort: ask ollawake to wake/ensure a host. Silent if ollawake is down."""
+    try:
+        req = urllib.request.Request(f"{OLLAWAKE}/ensure/{host}", data=b"", method="POST")
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
+
+
+def _compile_with(url: str, model: str, messages: list, state_override, ts_model: str) -> dict:
+    """One host attempt. Raises URLError/Timeout (network) or JSONDecodeError/SystemExit (bad output)."""
+    if not _reachable(url):
+        raise urllib.error.URLError("host unreachable")
+    payload = {
+        "model": model, "think": False, "stream": False, "format": "json",
+        "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 2048},
+        "messages": messages,
+    }
+    resp = _post_json(url, payload, timeout=90.0)
+    raw = resp.get("message", {}).get("content", "")
+    compiled = _extract_json(raw)                       # JSONDecodeError -> try next host
     state = state_override if state_override is not None else compiled.get("state")
     questions = _validate_questions(compiled.get("questions"))
     return {"model": ts_model, "state": state, "questions": questions}
+
+
+def compile_request(text: str, *, state_override: str | None = None,
+                    candidates: list | None = None, ts_model: str = TS_MODEL,
+                    verbose: bool = True) -> dict:
+    """Natural-language text -> normalized TypeSafe request, with fleet fallback.
+
+    Tries each candidate host in order; on network failure of a wake-capable host it
+    asks ollawake to wake it and retries once, then falls through to the next host.
+    """
+    user = text if state_override is None else f"{text}\n\n<content to evaluate>\n{state_override}"
+    messages = [
+        {"role": "system", "content": COMPILER_SYSTEM},
+        {"role": "user", "content": FEWSHOT_USER},
+        {"role": "assistant", "content": FEWSHOT_ASSISTANT},
+        {"role": "user", "content": user},
+    ]
+    chain = candidates if candidates is not None else _load_chain()
+    errors: list[str] = []
+    waked = False
+    i = 0
+    while i < len(chain):
+        c = chain[i]
+        label = c.get("label", c["url"])
+        try:
+            req = _compile_with(c["url"], c["model"], messages, state_override, ts_model)
+            if verbose and i > 0:
+                print(f"[llm] fallback → {label} ({c['model']})", file=sys.stderr)
+            return req
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, SystemExit) as e:
+            errors.append(f"{label}/{c['model']}: {type(e).__name__}")
+            is_net = isinstance(e, (urllib.error.URLError, TimeoutError))
+            if is_net and c.get("wake") and not waked:
+                waked = True
+                if verbose:
+                    print(f"[llm] {label} no responde; despertando vía ollawake…", file=sys.stderr)
+                _try_wake(c["wake"])
+                continue  # retry this same candidate once
+            i += 1
+    raise SystemExit("[error] ningún host de la flota respondió/compiló:\n  "
+                     + "\n  ".join(errors)
+                     + "\n  Ajusta la cadena (TS_TRANSLATE_LLM_CHAIN) o usa --llm-url/--llm-model.")
+
+
+def _load_chain() -> list:
+    env = os.environ.get("TS_TRANSLATE_LLM_CHAIN")
+    if env:
+        try:
+            return json.loads(env)
+        except json.JSONDecodeError:
+            raise SystemExit("[error] TS_TRANSLATE_LLM_CHAIN no es JSON válido.")
+    return DEFAULT_CHAIN
 
 
 def _validate_questions(q) -> dict:
@@ -224,10 +293,22 @@ def main(argv=None):
     p.add_argument("-c", "--content", help="contenido a evaluar (si no, se toma de stdin o del propio texto)")
     p.add_argument("--json", action="store_true", help="solo imprime el request generado (no ejecuta)")
     p.add_argument("--show", action="store_true", help="imprime también el request generado al ejecutar")
-    p.add_argument("--llm-url", default=LLM_URL)
-    p.add_argument("--llm-model", default=LLM_MODEL)
+    p.add_argument("--llm-url", help="forzar un host LLM concreto (desactiva el fallback)")
+    p.add_argument("--llm-model", help="modelo LLM para --llm-url (o el primero de la cadena)")
     p.add_argument("--ts-model", default=TS_MODEL, help="modelo TypeSafe (default jev-latest)")
+    p.add_argument("--chain", action="store_true", help="imprime la cadena de fallback efectiva y sale")
     args = p.parse_args(argv)
+
+    if args.chain:
+        print(json.dumps(_load_chain(), ensure_ascii=False, indent=2))
+        return
+
+    # Explicit host override -> single candidate, no fallback. Else the fleet chain.
+    candidates = None
+    if args.llm_url or args.llm_model:
+        candidates = [{"label": "custom",
+                       "url": args.llm_url or DEFAULT_CHAIN[0]["url"],
+                       "model": args.llm_model or DEFAULT_CHAIN[0]["model"]}]
 
     state_override = args.content
     if state_override is None and not sys.stdin.isatty():
@@ -235,8 +316,7 @@ def main(argv=None):
         state_override = piped or None
 
     request = compile_request(args.text, state_override=state_override,
-                              llm_url=args.llm_url, llm_model=args.llm_model,
-                              ts_model=args.ts_model)
+                              candidates=candidates, ts_model=args.ts_model)
 
     if args.json:
         print(json.dumps(request, ensure_ascii=False, indent=2))

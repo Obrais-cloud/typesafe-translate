@@ -34,19 +34,39 @@ El compilador aplica las reglas de TypeSafe: escala ordenada → **score** (nive
 e independientes), categorías sin orden → **choice**, condición sí/no → **noul**. Una pregunta
 por juicio; no inventa juicios que no pediste.
 
+## Fallback automático de la flota
+
+Si el host primario no responde, el CLI **no falla**: recorre una cadena de hosts hasta que
+uno compila el request. Antes de cada intento hace un chequeo rápido de vida (`/api/tags`, 4 s)
+para no bloquearse en un host caído. Si el host caído es despertable, pide a **ollawake**
+(`/ensure/<host>`) que lo levante y reintenta una vez; si no, pasa al siguiente.
+
+Cadena por defecto (ver con `typesafe-translate x --chain`):
+
+1. `corsair` · `qwen3.8:27b`  (primario, despertable)
+2. `corsair` · `qwen3.6:35b-a3b`  (mismo host, modelo alterno)
+3. `mac-studio` · `ornith-1.5:35b`
+4. `alien18` · `qwen3:14b`
+
+También se reintenta el siguiente host si uno devuelve JSON irreparable. Se cae con error
+claro solo si **ningún** host responde.
+
 ## Flags / entorno
 
 | Flag | Env | Default |
 |---|---|---|
-| `--llm-url` | `TS_TRANSLATE_LLM_URL` | `http://100.94.117.48:11434/api/chat` (corsair) |
-| `--llm-model` | `TS_TRANSLATE_LLM_MODEL` | `qwen3.8:27b` |
+| `--llm-url` | — | forzar un host (desactiva el fallback) |
+| `--llm-model` | — | modelo para `--llm-url` |
+| — | `TS_TRANSLATE_LLM_CHAIN` | JSON `[{label,url,model,wake?}]` para sustituir la cadena entera |
+| — | `TS_TRANSLATE_OLLAWAKE` | `http://100.70.244.85:11436` |
 | `--ts-model` | `TS_TRANSLATE_TS_MODEL` | `jev-latest` |
 | `-c/--content` | — | contenido a evaluar (si no, stdin o el propio texto) |
 | `--json` | — | solo imprime el request (no ejecuta) |
+| `--chain` | — | imprime la cadena de fallback efectiva y sale |
 | `--show` | — | imprime también el request generado (a stderr) al ejecutar |
 
-Si corsair está dormido, apunta `--llm-url` a otro host de la flota con un modelo capaz
-(p. ej. mac-studio / alien18) o usa el gateway.
+`--llm-url`/`--llm-model` fuerzan un único host (sin cadena). Para cambiar la cadena
+completa usa `TS_TRANSLATE_LLM_CHAIN`.
 
 ## Notas de robustez
 
