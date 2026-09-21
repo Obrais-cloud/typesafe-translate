@@ -27,7 +27,7 @@ import urllib.request
 LLM_URL = os.environ.get("TS_TRANSLATE_LLM_URL", "http://100.94.117.48:11434/api/chat")  # corsair
 LLM_MODEL = os.environ.get("TS_TRANSLATE_LLM_MODEL", "qwen3.8:27b")
 TS_URL = os.environ.get("TS_TRANSLATE_TS_URL", "https://api.typesafe.ai/v1/systemone")
-TS_MODEL = os.environ.get("TS_TRANSLATE_TS_MODEL", "jev-latest")
+TS_MODEL = (os.environ.get("TS_TRANSLATE_TS_MODEL") or "jev-1.13.0")
 
 # ollawake (mac mini) — best-effort wake of a sleeping host; ignored if unreachable.
 OLLAWAKE = os.environ.get("TS_TRANSLATE_OLLAWAKE", "http://100.70.244.85:11436")
@@ -295,7 +295,7 @@ def main(argv=None):
     p.add_argument("--show", action="store_true", help="imprime también el request generado al ejecutar")
     p.add_argument("--llm-url", help="forzar un host LLM concreto (desactiva el fallback)")
     p.add_argument("--llm-model", help="modelo LLM para --llm-url (o el primero de la cadena)")
-    p.add_argument("--ts-model", default=TS_MODEL, help="modelo TypeSafe (default jev-latest)")
+    p.add_argument("--ts-model", default=TS_MODEL, help="modelo TypeSafe (default jev-1.13.0, fijado)")
     p.add_argument("--chain", action="store_true", help="imprime la cadena de fallback efectiva y sale")
     args = p.parse_args(argv)
 
