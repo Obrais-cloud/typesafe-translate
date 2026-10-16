@@ -2,7 +2,7 @@
 
 Escribe algo normal y obtén las variables que necesita TypeSafe — y, por defecto, la respuesta ya ejecutada.
 
-TypeSafe no genera texto, así que un LLM local (tu flota Ollama: `qwen3.8:27b` @ corsair)
+TypeSafe no genera texto, así que un LLM local (tu flota Ollama: Nemotron 3.5 Super @ corsair)
 **compila** tu frase en un request TypeSafe válido `{state, questions{...}}`, se valida,
 y se llama a la API de TypeSafe (Jev / System One).
 
@@ -43,10 +43,9 @@ para no bloquearse en un host caído. Si el host caído es despertable, pide a *
 
 Cadena por defecto (ver con `typesafe-translate x --chain`):
 
-1. `corsair` · `qwen3.8:27b`  (primario, despertable)
-2. `corsair` · `qwen3.6:35b-a3b`  (mismo host, modelo alterno)
-3. `mac-studio` · `ornith-1.5:35b`
-4. `alien18` · `qwen3:14b`
+1. `corsair` · `nemotron-3.5-super:120b-a12b-q4_K_M`  (primario, despertable)
+2. `mac-studio` · `ornith-1.5:35b`
+3. `alien18` · `qwen3:14b`
 
 También se reintenta el siguiente host si uno devuelve JSON irreparable. Se cae con error
 claro solo si **ningún** host responde.

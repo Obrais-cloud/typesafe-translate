@@ -2,7 +2,7 @@
 """
 typesafe-translate — escribe algo normal y lo transforma a las variables de TypeSafe.
 
-Un LLM local (flota Ollama: qwen3.8:27b @ corsair) compila tu texto en un request
+Un LLM local (flota Ollama: Nemotron 3.5 Super @ corsair) compila tu texto en un request
 TypeSafe válido {state, questions{...}} y, por defecto, lo ejecuta contra la API.
 
 Uso:
@@ -25,7 +25,7 @@ import urllib.request
 
 # --- defaults (flota) --------------------------------------------------------
 LLM_URL = os.environ.get("TS_TRANSLATE_LLM_URL", "http://100.94.117.48:11434/api/chat")  # corsair
-LLM_MODEL = os.environ.get("TS_TRANSLATE_LLM_MODEL", "qwen3.8:27b")
+LLM_MODEL = os.environ.get("TS_TRANSLATE_LLM_MODEL", "nemotron-3.5-super:120b-a12b-q4_K_M")
 TS_URL = os.environ.get("TS_TRANSLATE_TS_URL", "https://api.typesafe.ai/v1/systemone")
 TS_MODEL = (os.environ.get("TS_TRANSLATE_TS_MODEL") or "jev-1.13.0")
 
@@ -35,8 +35,8 @@ OLLAWAKE = os.environ.get("TS_TRANSLATE_OLLAWAKE", "http://100.70.244.85:11436")
 # Fallback chain: tried in order until one host answers with a compilable request.
 # Override wholesale with TS_TRANSLATE_LLM_CHAIN (JSON list of {label,url,model,wake?}).
 DEFAULT_CHAIN = [
-    {"label": "corsair",    "url": "http://100.94.117.48:11434/api/chat", "model": "qwen3.8:27b",     "wake": "corsair"},
-    {"label": "corsair-alt","url": "http://100.94.117.48:11434/api/chat", "model": "qwen3.6:35b-a3b"},
+    # 2026-10-16: Corsair solo tiene Nemotron 3.5 Super (sustituye a qwen3.8 y qwen3.6)
+    {"label": "corsair",    "url": "http://100.94.117.48:11434/api/chat", "model": "nemotron-3.5-super:120b-a12b-q4_K_M", "wake": "corsair"},
     {"label": "mac-studio", "url": "http://100.68.94.14:11434/api/chat",  "model": "ornith-1.5:35b"},
     {"label": "alien18",    "url": "http://100.87.2.47:11434/api/chat",   "model": "qwen3:14b"},
 ]
@@ -163,10 +163,10 @@ def _compile_with(url: str, model: str, messages: list, state_override, ts_model
         raise urllib.error.URLError("host unreachable")
     payload = {
         "model": model, "think": False, "stream": False, "format": "json",
-        "options": {"temperature": 0, "num_ctx": 8192, "num_predict": 2048},
+        "options": {"temperature": 0, "num_predict": 2048, **({} if "nemotron" in model else {"num_ctx": 8192})},  # Nemotron: no cambiar ctx (recargaría 90 GB)
         "messages": messages,
     }
-    resp = _post_json(url, payload, timeout=90.0)
+    resp = _post_json(url, payload, timeout=300.0 if "nemotron" in model else 90.0)
     raw = resp.get("message", {}).get("content", "")
     compiled = _extract_json(raw)                       # JSONDecodeError -> try next host
     state = state_override if state_override is not None else compiled.get("state")
